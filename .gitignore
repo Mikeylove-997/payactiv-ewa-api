@@ -1,0 +1,27 @@
+# Raw data files (too large and sensitive for GitHub)
+*.csv
+data/
+
+# Environment variables (keep private)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS system files
+.DS_Store
+
+# R history
+.Rhistory
+
+# Temporary Word files
+~$*.docx
+
+# Virtual environment
+venv/
+.venv/
