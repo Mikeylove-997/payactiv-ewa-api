@@ -17,15 +17,17 @@ import numpy as np
 import pandas as pd
 import shap
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
 from xgboost import XGBRegressor
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
-MODEL_PATH    = BASE_DIR / "ewa_risk_model.json"
-FEATURES_PATH = BASE_DIR / "ewa_model_features.pkl"
-METADATA_PATH = BASE_DIR / "ewa_model_metadata.pkl"
+MODEL_PATH      = BASE_DIR / "ewa_risk_model.json"
+FEATURES_PATH   = BASE_DIR / "ewa_model_features.pkl"
+METADATA_PATH   = BASE_DIR / "ewa_model_metadata.pkl"
+USER_DATA_PATH  = BASE_DIR / "user_features_api.csv"
 
 # ── Global model state (loaded once at startup) ────────────────────────────────
 class ModelState:
@@ -34,6 +36,7 @@ class ModelState:
     feature_cols: list[str] = None
     calibration_multiplier: float = 1.0
     metadata: dict = {}
+    user_data: pd.DataFrame = None   # user_id → 34 features lookup table
 
 state = ModelState()
 
@@ -56,6 +59,13 @@ async def lifespan(app: FastAPI):
     # TreeExplainer is fast for XGBoost — build it once, reuse per request
     state.explainer = shap.TreeExplainer(state.model)
 
+    # Load user features lookup table if available
+    if USER_DATA_PATH.exists():
+        state.user_data = pd.read_csv(USER_DATA_PATH).set_index("user_id")
+        print(f"[startup] User data loaded — {len(state.user_data):,} users")
+    else:
+        print("[startup] No user_features_api.csv found — /user_risk, /top_features, /high_risk_users unavailable")
+
     print(f"[startup] Model loaded — {len(state.feature_cols)} features, "
           f"calibration={state.calibration_multiplier:.4f}")
     yield
@@ -67,6 +77,13 @@ app = FastAPI(
     description="Predicts EWA withdrawal frequency and demand tier for a batch of users.",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -261,3 +278,90 @@ def predict(req: PredictRequest):
         tier_thresholds={"low_max": round(low_thresh, 4), "high_min": round(high_thresh, 4)},
         total_users=len(predictions),
     )
+
+
+def _check_user_data():
+    if state.user_data is None:
+        raise HTTPException(status_code=503, detail="User data not loaded. Add user_features_api.csv to the API folder.")
+
+
+def _predict_for_user(user_id: str):
+    if user_id not in state.user_data.index:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found.")
+    row = state.user_data.loc[user_id][state.feature_cols]
+    X = pd.DataFrame([row.values], columns=state.feature_cols)
+    log_score = float(state.model.predict(X)[0])
+    count = float(max(np.expm1(log_score) * state.calibration_multiplier, 0))
+    shap_vals = state.explainer.shap_values(X)[0]
+    return X, log_score, count, shap_vals
+
+
+@app.get("/user_risk/{user_id}")
+def get_user_risk(user_id: str):
+    """Get predicted EWA withdrawal count and demand tier for a single user."""
+    _check_user_data()
+    X, log_score, count, shap_vals = _predict_for_user(user_id)
+
+    all_scores = state.model.predict(pd.DataFrame(state.user_data[state.feature_cols]))
+    low_thresh  = float(np.percentile(all_scores, 30))
+    high_thresh = float(np.percentile(all_scores, 70))
+
+    return {
+        "user_id": user_id,
+        "predicted_ewa_count": round(count, 2),
+        "demand_tier": assign_tier(log_score, low_thresh, high_thresh),
+        "predicted_score": round(log_score, 4),
+    }
+
+
+@app.get("/top_features/{user_id}")
+def get_top_features(user_id: str, top_n: int = 5):
+    """Get top SHAP drivers explaining the EWA prediction for a single user."""
+    _check_user_data()
+    X, log_score, count, shap_vals = _predict_for_user(user_id)
+
+    sorted_idx = np.argsort(np.abs(shap_vals))[::-1][:top_n]
+    drivers = [
+        {
+            "rank": i + 1,
+            "feature": state.feature_cols[j],
+            "shap": round(float(shap_vals[j]), 5),
+            "value": round(float(X.iloc[0, j]), 4),
+            "direction": "increases EWA demand" if shap_vals[j] > 0 else "decreases EWA demand",
+        }
+        for i, j in enumerate(sorted_idx)
+    ]
+
+    return {
+        "user_id": user_id,
+        "predicted_ewa_count": round(count, 2),
+        "top_drivers": drivers,
+    }
+
+
+@app.get("/high_risk_users")
+def get_high_risk_users(threshold: float = 0.7):
+    """Get all users whose predicted score is in the top percentile (default: top 30%)."""
+    _check_user_data()
+
+    X_all = pd.DataFrame(state.user_data[state.feature_cols])
+    all_scores = state.model.predict(X_all)
+    counts = np.maximum(np.expm1(all_scores) * state.calibration_multiplier, 0)
+
+    cutoff = float(np.percentile(all_scores, threshold * 100))
+    high_risk = [
+        {
+            "user_id": uid,
+            "predicted_ewa_count": round(float(counts[i]), 2),
+            "predicted_score": round(float(all_scores[i]), 4),
+        }
+        for i, uid in enumerate(state.user_data.index)
+        if all_scores[i] >= cutoff
+    ]
+    high_risk.sort(key=lambda x: x["predicted_score"], reverse=True)
+
+    return {
+        "threshold_percentile": f"top {round((1 - threshold) * 100)}%",
+        "total_high_risk_users": len(high_risk),
+        "users": high_risk,
+    }
