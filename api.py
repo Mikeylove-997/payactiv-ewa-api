@@ -189,6 +189,16 @@ def assign_tier(score: float, low_thresh: float, high_thresh: float) -> str:
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
+@app.get("/")
+def root():
+    return {
+        "name": "Payactiv EWA Demand Forecasting API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
 @app.get("/health")
 def health():
     return {
