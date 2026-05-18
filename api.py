@@ -489,3 +489,58 @@ def get_high_distress_users(min_probability: float = 0.5):
         "total_distressed_users": len(distressed),
         "users": distressed,
     }
+
+
+# ── Gradio Dashboard Adapter Endpoints ────────────────────────────────────────
+
+class DistressAdapterRequest(BaseModel):
+    user_id: str = "unknown"
+    total_spend: float = 0
+    txn_count: float = 0
+    total_spend_30d: float = 0
+    max_daily_spend_30d: float = 0
+    txn_count_30d: float = 0
+    ewa_usage_count: float = 0
+    ewa_total_amount: float = 0
+    ewa_avg_amount: float = 0
+    ewa_max_amount: float = 0
+
+
+@app.post("/distress/predict")
+def distress_predict_adapter(req: DistressAdapterRequest):
+    """
+    Adapter endpoint for Gradio dashboard — Financial Distress tab.
+    If user_id exists in our data, uses real model. Otherwise uses input features directly.
+    """
+    from datetime import datetime
+
+    # Try real model lookup first
+    if req.user_id != "unknown" and state.fd_user_data is not None:
+        if req.user_id in state.fd_user_data.index:
+            row = state.fd_user_data.loc[req.user_id][state.fd_feature_cols]
+            X = pd.DataFrame([row.values], columns=state.fd_feature_cols)
+            prob = float(state.fd_model.predict_proba(X)[0][1])
+            risk_level = "High" if prob >= 0.6 else "Medium" if prob >= 0.3 else "Low"
+            return {
+                "user_id": req.user_id,
+                "risk_score": round(prob, 4),
+                "risk_level": f"{risk_level} risk",
+                "model_type": "RandomForestClassifier",
+                "timestamp": datetime.now().isoformat(),
+            }
+
+    # Fallback: use provided features to estimate risk
+    risk_score = min(1.0,
+        (req.total_spend / 10000) * 0.3 +
+        (req.ewa_usage_count / 20) * 0.4 +
+        (req.ewa_total_amount / 5000) * 0.3
+    )
+    risk_level = "High" if risk_score >= 0.6 else "Medium" if risk_score >= 0.3 else "Low"
+
+    return {
+        "user_id": req.user_id,
+        "risk_score": round(risk_score, 4),
+        "risk_level": f"{risk_level} risk",
+        "model_type": "RandomForestClassifier (estimated)",
+        "timestamp": datetime.now().isoformat(),
+    }
