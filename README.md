@@ -1,6 +1,6 @@
-# Payactiv EWA Demand Forecasting API
+# Payactiv Risk Prediction API
 
-A FastAPI backend that predicts EWA (Earned Wage Access) withdrawal demand for users using a trained XGBoost model.
+A FastAPI backend serving two ML models for EWA demand forecasting and financial distress prediction.
 
 **Live API:** `https://web-production-00c9c.up.railway.app`  
 **Interactive Docs:** `https://web-production-00c9c.up.railway.app/docs`
@@ -9,14 +9,18 @@ A FastAPI backend that predicts EWA (Earned Wage Access) withdrawal demand for u
 
 ## What It Does
 
-Given a user's pre-computed spending and EWA history features, the API predicts:
-- How many EWA withdrawals they are expected to make in the next period
-- Which demand tier they fall into (Low / Medium / High)
-- Which features are driving that prediction (SHAP explanation)
+Two models working together to give Payactiv a complete picture of each user:
+
+| Model | Question it answers | Business use |
+|---|---|---|
+| **EWA Demand** | How many withdrawals will this user make? | Liquidity planning |
+| **Financial Distress** | Is this user financially struggling? | User support & outreach |
 
 ---
 
-## Model
+## Models
+
+### Model 1 — EWA Demand Forecasting
 
 | Detail | Value |
 |---|---|
@@ -26,12 +30,13 @@ Given a user's pre-computed spending and EWA history features, the API predicts:
 | Calibration multiplier | 1.3938 |
 | R² | 0.6143 |
 | Spearman correlation | 0.7548 |
+| Users | 11,988 |
 | Training window | Nov 6, 2025 – Jan 31, 2026 |
 | Prediction window | Feb 1, 2026 – Apr 7, 2026 |
 
-### Top 5 SHAP Drivers (Global Feature Importance)
+**Top 5 SHAP Drivers:**
 
-| Rank | Feature | Plain Meaning |
+| Rank | Feature | Meaning |
 |---|---|---|
 | 1 | `ewa_usage_count` | How many times user used EWA before |
 | 2 | `ewa_total_amount` | Total dollars withdrawn via EWA |
@@ -41,196 +46,166 @@ Given a user's pre-computed spending and EWA history features, the API predicts:
 
 ---
 
+### Model 2 — Financial Distress Prediction
+
+| Detail | Value |
+|---|---|
+| Model type | Random Forest Classifier |
+| Target variable | Financially distressed (Yes/No) |
+| Features | 23 pre-computed user features |
+| ROC-AUC | 0.8705 |
+| F1 Score | 0.683 |
+| Users | 5,359 |
+| Distress threshold | Spend > income on ≥30% of Window 2 days |
+| Training window | Nov 6, 2025 – Jan 31, 2026 |
+| Prediction window | Feb 1, 2026 – Mar 24, 2026 |
+
+**Top 5 Feature Importances:**
+
+| Rank | Feature | Meaning |
+|---|---|---|
+| 1 | `card_to_bank_spend_ratio_30d` | Heavy card vs bank usage |
+| 2 | `total_spend` | Overall spending level |
+| 3 | `disc_active_days_30d` | Days with discretionary spending |
+| 4 | `ewa_total_amount` | Total EWA withdrawn |
+| 5 | `ewa_avg_amount` | Average EWA withdrawal amount |
+
+---
+
 ## Endpoints
 
-### 1. Health Check
-```
-GET /health
-```
-Returns whether the API is running and the model is loaded.
+### System
 
-**Response:**
+#### `GET /`
+Welcome message and links to docs.
+
+#### `GET /health`
+Returns whether the API is running and both models are loaded.
+
 ```json
-{
-  "status": "ok",
-  "model_loaded": true,
-  "feature_count": 34
-}
+{ "status": "ok", "model_loaded": true, "feature_count": 34 }
 ```
+
+#### `GET /model-info`
+Returns EWA model metadata including features, metrics, and time windows.
 
 ---
 
-### 2. Model Info
-```
-GET /model-info
-```
-Returns model metadata including features, metrics, and time windows.
+### EWA Demand Model
 
----
+#### `POST /predict`
+Batch prediction for multiple users. Send pre-computed features, get predictions + SHAP explanations back.
 
-### 3. Batch Predict
-```
-POST /predict
-```
-Accepts a batch of users with their pre-computed features and returns predictions.
-
-**Request Body:**
-```json
-{
-  "users": [
-    {
-      "user_id": "USER_001",
-      "features": {
-        "total_spend": 4200.0,
-        "txn_count": 87,
-        "spend_mean_30d": 140.0,
-        "spend_volatility_30d": 52.3,
-        "spend_cv_30d": 0.37,
-        "spend_txn_count_30d": 62.0,
-        "max_daily_spend_30d": 320.0,
-        "spend_mean_30d_lag1": 130.0,
-        "spend_volatility_30d_lag1": 48.1,
-        "spend_cv_30d_lag1": 0.37,
-        "essential_ratio_30d": 0.61,
-        "non_essential_spend_30d": 850.0,
-        "non_essential_spend_vol_30d": 40.2,
-        "disc_active_days_30d": 18.0,
-        "total_spend_30d": 2100.0,
-        "top_merchant_spend_ratio": 0.22,
-        "bank_spend_30d": 1500.0,
-        "card_spend_share_30d": 0.43,
-        "card_to_bank_spend_ratio_30d": 0.75,
-        "spend_trend_w2_vs_w1": 0.12,
-        "spend_volatility_trend_7d": 0.05,
-        "frequent_small_txn_ratio": 0.30,
-        "merchant_churn_rate": 0.45,
-        "w1_distress_ratio": 0.40,
-        "ewa_usage_count": 3.0,
-        "ewa_total_amount": 600.0,
-        "ewa_avg_amount": 200.0,
-        "ewa_max_amount": 250.0,
-        "ewa_avg_income_rate": 0.18,
-        "ewa_min_income_rate": 0.10,
-        "ewa_contract_FullTimeHourly": 1,
-        "ewa_contract_FullTimeSalaried": 0,
-        "ewa_contract_PartTimeHourly": 0,
-        "ewa_contract_PartTimeSalaried": 0
-      }
-    }
-  ],
-  "include_shap": true,
-  "top_n_drivers": 5
-}
-```
-
-**Response:**
-```json
-{
-  "predictions": [
-    {
-      "user_id": "USER_001",
-      "predicted_score": 0.0715,
-      "predicted_ewa_count": 0.1,
-      "demand_tier": "Low",
-      "shap_values": { "ewa_usage_count": -0.43, "...": "..." },
-      "top_drivers": [
-        {
-          "feature": "ewa_usage_count",
-          "shap": -0.43,
-          "value": 3.0,
-          "direction": "decreases EWA demand"
-        }
-      ]
-    }
-  ],
-  "model_version": "XGBRegressor",
-  "calibration_multiplier": 1.3938,
-  "tier_thresholds": { "low_max": 0.07, "high_min": 0.07 },
-  "total_users": 1
-}
-```
-
----
-
-### 4. User Risk Lookup ⚠️ Requires user_features_api.csv
-```
-GET /user_risk/{user_id}
-```
-Returns predicted EWA count and demand tier for a single user by ID.
+#### `GET /user_risk/{user_id}`
+Predicted EWA withdrawal count and demand tier for one user.
 
 **Example:** `GET /user_risk/Mymo1002027`
-
-**Response:**
 ```json
 {
   "user_id": "Mymo1002027",
-  "predicted_ewa_count": 3.2,
+  "predicted_ewa_count": 20.48,
   "demand_tier": "High",
-  "predicted_score": 1.4821
+  "predicted_score": 2.7531
 }
 ```
 
----
+#### `GET /top_features/{user_id}?top_n=5`
+Top SHAP drivers explaining why a user has high or low EWA demand.
 
-### 5. Top Features Lookup ⚠️ Requires user_features_api.csv
-```
-GET /top_features/{user_id}?top_n=5
-```
-Returns top SHAP drivers explaining the prediction for a single user.
-
-**Example:** `GET /top_features/Mymo1002027?top_n=5`
-
-**Response:**
 ```json
 {
   "user_id": "Mymo1002027",
-  "predicted_ewa_count": 3.2,
+  "predicted_ewa_count": 20.48,
   "top_drivers": [
-    {
-      "rank": 1,
-      "feature": "ewa_usage_count",
-      "shap": 0.52,
-      "value": 8.0,
-      "direction": "increases EWA demand"
-    }
+    { "rank": 1, "feature": "ewa_usage_count", "shap": 0.891, "value": 62.0, "direction": "increases EWA demand" }
   ]
 }
 ```
 
----
+#### `GET /high_risk_users?threshold=0.7`
+All users in the top risk percentile. Default = top 30%.
 
-### 6. High Risk Users ⚠️ Requires user_features_api.csv
-```
-GET /high_risk_users?threshold=0.7
-```
-Returns all users in the top risk percentile. Default threshold = 0.7 (top 30%).
-
-**Response:**
 ```json
 {
   "threshold_percentile": "top 30%",
-  "total_high_risk_users": 3596,
-  "users": [
-    {
-      "user_id": "Mymo1002027",
-      "predicted_ewa_count": 3.2,
-      "predicted_score": 1.4821
-    }
+  "total_high_risk_users": 3597,
+  "users": [{ "user_id": "Mymo1002027", "predicted_ewa_count": 20.48, "predicted_score": 2.7531 }]
+}
+```
+
+---
+
+### Financial Distress Model
+
+#### `GET /distress_risk/{user_id}`
+Financial distress probability and label for one user.
+
+**Example:** `GET /distress_risk/Mymo1002027`
+```json
+{
+  "user_id": "Mymo1002027",
+  "distress_probability": 0.172,
+  "financially_distressed": "No",
+  "risk_level": "Low"
+}
+```
+
+#### `GET /distress_features/{user_id}?top_n=5`
+Top features driving the financial distress prediction for one user.
+
+```json
+{
+  "user_id": "Mymo1002027",
+  "distress_probability": 0.172,
+  "financially_distressed": "No",
+  "top_drivers": [
+    { "rank": 1, "feature": "card_to_bank_spend_ratio_30d", "importance": 0.089, "value": 0.5 }
   ]
 }
 ```
 
-> **Note:** Endpoints 4, 5, and 6 require `user_features_api.csv` to be present in the API folder. This file contains pre-computed user features and is pending data privacy approval before being added to the repository.
+#### `GET /high_distress_users?min_probability=0.5`
+All users predicted to be financially distressed above the probability threshold.
+
+```json
+{
+  "min_probability": 0.5,
+  "total_distressed_users": 1316,
+  "users": [{ "user_id": "Mymo1003871", "distress_probability": 0.94, "risk_level": "High" }]
+}
+```
 
 ---
 
-## Demand Tiers
+## Combined View (Both Models)
 
-| Tier | Definition | Business Action |
-|---|---|---|
-| **High** | Top 30% predicted score | Reserve higher liquidity |
-| **Medium** | Middle 40% predicted score | Standard provisioning |
-| **Low** | Bottom 30% predicted score | Minimal provisioning |
+The real power comes from combining both predictions:
+
+| EWA Demand | Distress | Meaning | Action |
+|---|---|---|---|
+| High | High | Heavy user + struggling | Urgent — liquidity + outreach |
+| High | Low | Heavy user, financially stable | Reserve liquidity only |
+| Low | High | Struggling but not using EWA | Wellness outreach |
+| Low | Low | Stable user | No action needed |
+
+---
+
+## Claude Integration (MCP)
+
+This API is connected to Claude Desktop via MCP. Claude can call all 6 user-facing tools directly:
+
+```
+get_user_risk(user_id)
+get_top_features(user_id)
+get_high_risk_users(threshold)
+get_distress_risk(user_id)
+get_distress_features(user_id)
+get_high_distress_users(min_probability)
+```
+
+**Example conversation:**
+> "Is user Mymo1002027 financially distressed?"  
+> Claude → calls `/distress_risk/Mymo1002027` → returns answer in plain English
 
 ---
 
@@ -240,24 +215,21 @@ Returns all users in the top risk percentile. Default threshold = 0.7 (top 30%).
 |---|---|
 | Web framework | FastAPI |
 | ASGI server | Uvicorn |
-| ML model | XGBoost |
-| Explainability | SHAP (TreeExplainer) |
+| EWA model | XGBoost |
+| Distress model | Random Forest |
+| Explainability | SHAP |
 | Data processing | Pandas, NumPy |
 | Validation | Pydantic |
 | Deployment | Railway |
+| AI integration | MCP (Claude Desktop) |
 
 ---
 
 ## Running Locally
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Start server
 uvicorn api:app --reload --port 8000
-
-# Open docs
 open http://localhost:8000/docs
 ```
 
@@ -266,23 +238,18 @@ open http://localhost:8000/docs
 ## Project Structure
 
 ```
-API/
-├── api.py                      # FastAPI app — all 6 endpoints
-├── ewa_risk_model.json         # Trained XGBoost model
-├── ewa_model_features.pkl      # Feature column list (34 features)
-├── ewa_model_metadata.pkl      # Calibration multiplier + metrics
-├── user_features_api.csv       # Pre-computed user features (pending approval)
-├── requirements.txt            # Package dependencies
-├── Procfile                    # Railway deployment config
-├── dashboard.html              # Frontend dashboard (CSV upload)
-└── .gitignore                  # Excludes raw data files
+EWA API/
+├── api.py                       # FastAPI app — 9 endpoints
+├── mcp_server.py                # Claude Desktop MCP integration
+├── ewa_risk_model.json          # Trained XGBoost model (EWA)
+├── ewa_model_features.pkl       # EWA feature list (34 features)
+├── ewa_model_metadata.pkl       # EWA calibration + metrics
+├── user_features_api.csv        # EWA user features (11,988 users)
+├── fd_risk_model.pkl            # Trained Random Forest (distress)
+├── fd_model_features.pkl        # Distress feature list (23 features)
+├── fd_model_metadata.pkl        # Distress metrics
+├── fd_user_features_api.csv     # Distress user features (5,359 users)
+├── requirements.txt             # Package dependencies
+├── Procfile                     # Railway deployment config
+└── .gitignore                   # Excludes raw data files
 ```
-
----
-
-## What's Next
-
-- [ ] Data privacy approval for `user_features_api.csv`
-- [ ] Week 4: Error handling + edge case testing
-- [ ] MCP wrapping for Claude integration
-- [ ] Frontend connection to co-worker's Gradio app
