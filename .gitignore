@@ -2,8 +2,9 @@
 *.csv
 data/
 
-# Allow the user features lookup table (not raw data, no PII)
+# Allow the user features lookup tables (not raw data, no PII)
 !user_features_api.csv
+!fd_user_features_api.csv
 
 # Environment variables (keep private)
 .env
