@@ -243,3 +243,15 @@ EWA API/
 | MCP server — Claude Desktop integration | ✓ Complete |
 | Gradio frontend dashboard | ✓ Complete |
 | GitHub repository with documentation | ✓ Complete |
+
+---
+
+## Contributors
+
+| Name | Role | Contribution |
+|---|---|---|
+| **Mike Zhao** | Backend Engineer | ML models, REST API, Railway deployment, MCP server, documentation |
+| **Joy Zhan** | Frontend Engineer | Gradio dashboard design and Hugging Face deployment |
+
+**Academic Supervisor:** Professor Hou, Santa Clara University  
+**Industry Sponsor:** Payactiv
