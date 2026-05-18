@@ -228,8 +228,13 @@ def predict(req: PredictRequest):
         user_ids.append(str(entry["user_id"]))
 
         feat = entry["features"]
-        # Validate using Pydantic model (raises 422 automatically on bad values)
-        validated = UserFeatures(**feat)
+        try:
+            validated = UserFeatures(**feat)
+        except Exception as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid features for user '{entry['user_id']}': {str(e)}"
+            )
         row = [getattr(validated, col) for col in state.feature_cols]
         rows.append(row)
 
