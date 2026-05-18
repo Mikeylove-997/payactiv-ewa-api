@@ -21,22 +21,38 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
 from xgboost import XGBRegressor
+from sklearn.ensemble import RandomForestClassifier
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
+
+# EWA model paths
 MODEL_PATH      = BASE_DIR / "ewa_risk_model.json"
 FEATURES_PATH   = BASE_DIR / "ewa_model_features.pkl"
 METADATA_PATH   = BASE_DIR / "ewa_model_metadata.pkl"
 USER_DATA_PATH  = BASE_DIR / "user_features_api.csv"
 
+# Financial Distress model paths
+FD_MODEL_PATH    = BASE_DIR / "fd_risk_model.pkl"
+FD_FEATURES_PATH = BASE_DIR / "fd_model_features.pkl"
+FD_METADATA_PATH = BASE_DIR / "fd_model_metadata.pkl"
+FD_USER_DATA_PATH = BASE_DIR / "fd_user_features_api.csv"
+
 # ── Global model state (loaded once at startup) ────────────────────────────────
 class ModelState:
+    # EWA model
     model: XGBRegressor = None
     explainer: shap.TreeExplainer = None
     feature_cols: list[str] = None
     calibration_multiplier: float = 1.0
     metadata: dict = {}
-    user_data: pd.DataFrame = None   # user_id → 34 features lookup table
+    user_data: pd.DataFrame = None
+
+    # Financial Distress model
+    fd_model: RandomForestClassifier = None
+    fd_feature_cols: list[str] = None
+    fd_metadata: dict = {}
+    fd_user_data: pd.DataFrame = None
 
 state = ModelState()
 
@@ -66,10 +82,22 @@ async def lifespan(app: FastAPI):
     else:
         print("[startup] No user_features_api.csv found — /user_risk, /top_features, /high_risk_users unavailable")
 
-    print(f"[startup] Model loaded — {len(state.feature_cols)} features, "
+    print(f"[startup] EWA model loaded — {len(state.feature_cols)} features, "
           f"calibration={state.calibration_multiplier:.4f}")
+
+    # Load Financial Distress model
+    with open(FD_MODEL_PATH, "rb") as f:
+        state.fd_model = pickle.load(f)
+    with open(FD_FEATURES_PATH, "rb") as f:
+        state.fd_feature_cols = pickle.load(f)
+    with open(FD_METADATA_PATH, "rb") as f:
+        state.fd_metadata = pickle.load(f)
+    if FD_USER_DATA_PATH.exists():
+        state.fd_user_data = pd.read_csv(FD_USER_DATA_PATH).set_index("user_id")
+        print(f"[startup] FD model loaded — {len(state.fd_feature_cols)} features, {len(state.fd_user_data):,} users")
+
     yield
-    print("[shutdown] Model released")
+    print("[shutdown] Models released")
 
 
 app = FastAPI(
@@ -379,4 +407,85 @@ def get_high_risk_users(threshold: float = 0.7):
         "threshold_percentile": f"top {round((1 - threshold) * 100)}%",
         "total_high_risk_users": len(high_risk),
         "users": high_risk,
+    }
+
+
+# ── Financial Distress Endpoints ───────────────────────────────────────────────
+
+def _check_fd_user_data():
+    if state.fd_user_data is None:
+        raise HTTPException(status_code=503, detail="FD user data not loaded.")
+
+
+def _predict_distress_for_user(user_id: str):
+    if user_id not in state.fd_user_data.index:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found in distress model.")
+    row = state.fd_user_data.loc[user_id][state.fd_feature_cols]
+    X = pd.DataFrame([row.values], columns=state.fd_feature_cols)
+    prob = float(state.fd_model.predict_proba(X)[0][1])
+    label = "Yes" if prob >= 0.5 else "No"
+    return X, prob, label
+
+
+@app.get("/distress_risk/{user_id}")
+def get_distress_risk(user_id: str):
+    """Get financial distress probability and label for a single user."""
+    _check_fd_user_data()
+    X, prob, label = _predict_distress_for_user(user_id)
+    return {
+        "user_id": user_id,
+        "distress_probability": round(prob, 4),
+        "financially_distressed": label,
+        "risk_level": "High" if prob >= 0.6 else "Medium" if prob >= 0.3 else "Low",
+    }
+
+
+@app.get("/distress_features/{user_id}")
+def get_distress_features(user_id: str, top_n: int = 5):
+    """Get top features driving financial distress prediction for a single user."""
+    _check_fd_user_data()
+    X, prob, label = _predict_distress_for_user(user_id)
+
+    importances = state.fd_model.feature_importances_
+    sorted_idx = np.argsort(importances)[::-1][:top_n]
+    drivers = [
+        {
+            "rank": i + 1,
+            "feature": state.fd_feature_cols[j],
+            "importance": round(float(importances[j]), 5),
+            "value": round(float(X.iloc[0, j]), 4),
+        }
+        for i, j in enumerate(sorted_idx)
+    ]
+    return {
+        "user_id": user_id,
+        "distress_probability": round(prob, 4),
+        "financially_distressed": label,
+        "top_drivers": drivers,
+    }
+
+
+@app.get("/high_distress_users")
+def get_high_distress_users(min_probability: float = 0.5):
+    """Get all users predicted to be financially distressed above a probability threshold."""
+    _check_fd_user_data()
+
+    X_all = pd.DataFrame(state.fd_user_data[state.fd_feature_cols])
+    probs = state.fd_model.predict_proba(X_all)[:, 1]
+
+    distressed = [
+        {
+            "user_id": uid,
+            "distress_probability": round(float(probs[i]), 4),
+            "risk_level": "High" if probs[i] >= 0.6 else "Medium",
+        }
+        for i, uid in enumerate(state.fd_user_data.index)
+        if probs[i] >= min_probability
+    ]
+    distressed.sort(key=lambda x: x["distress_probability"], reverse=True)
+
+    return {
+        "min_probability": min_probability,
+        "total_distressed_users": len(distressed),
+        "users": distressed,
     }
