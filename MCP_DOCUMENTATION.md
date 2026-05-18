@@ -2,7 +2,7 @@
 
 **GitHub:** https://github.com/Mikeylove-997/payactiv-ewa-api  
 **MCP Server File:** `mcp_server.py`  
-**Setup Guide:** `MCP_SETUP.md`  
+**Live API:** https://web-production-00c9c.up.railway.app  
 
 ---
 
