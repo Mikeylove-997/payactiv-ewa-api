@@ -395,7 +395,87 @@ Dashboard displays:
 
 ---
 
-## 10. Contributors
+## 10. Privacy & Security Considerations
+
+### Current Status
+
+The GitHub repository currently contains two CSV files with aggregated user features:
+
+| File | Contains | Risk Level |
+|---|---|---|
+| `user_features_api.csv` | Real user IDs + aggregated spending stats (11,988 users) | Medium |
+| `fd_user_features_api.csv` | Real user IDs + aggregated spending stats (5,359 users) | Medium |
+
+**What is NOT exposed:**
+- Raw transaction records (no individual purchases)
+- Personal identifiable information (no names, emails, SSNs)
+- Account balances or sensitive financial details
+
+**What IS exposed:**
+- Internal Payactiv user IDs (e.g. `Mymo1002027`)
+- Aggregated spending statistics (totals, averages, ratios)
+- EWA usage history (counts and amounts)
+
+### Recommendation — Pending Payactiv Approval
+
+Before making the repository fully public, confirm with Payactiv whether aggregated user feature data can be shared publicly.
+
+**Question to ask Payactiv:**
+> "We stored aggregated user features (no raw transactions) on GitHub for API lookups. The data includes internal user IDs and summarized spending statistics. Is this acceptable for a public repository?"
+
+### Potential Fix — User ID Anonymization
+
+If Payactiv requires anonymization, replace real user IDs with anonymous ones before making the repo public. This preserves full API functionality while removing real identifiers.
+
+**Implementation:**
+
+```python
+import pandas as pd
+
+# Load both CSVs
+ewa_df = pd.read_csv('user_features_api.csv')
+fd_df  = pd.read_csv('fd_user_features_api.csv')
+
+# Create anonymized ID mapping
+all_ids = pd.concat([ewa_df['user_id'], fd_df['user_id']]).unique()
+id_map  = {uid: f"USER_{i:05d}" for i, uid in enumerate(all_ids)}
+
+# Replace user IDs
+ewa_df['user_id'] = ewa_df['user_id'].map(id_map)
+fd_df['user_id']  = fd_df['user_id'].map(id_map)
+
+# Save anonymized versions
+ewa_df.to_csv('user_features_api.csv', index=False)
+fd_df.to_csv('fd_user_features_api.csv', index=False)
+
+# Save mapping for internal reference (never commit this file)
+pd.DataFrame(list(id_map.items()),
+    columns=['original_id', 'anonymous_id']
+).to_csv('id_mapping_PRIVATE.csv', index=False)
+
+print(f"Anonymized {len(id_map):,} unique user IDs")
+```
+
+**Result:**
+- `Mymo1002027` → `USER_00001`
+- `Mymo1002233` → `USER_00002`
+- All feature values remain unchanged
+- API continues to work with anonymized IDs
+
+**After anonymization:** The repository can be made fully public with no privacy risk.
+
+### Additional Security Improvements (Production)
+
+| Improvement | Description | Priority |
+|---|---|---|
+| API key authentication | Require a secret key header for all requests | High |
+| Rate limiting | Limit requests per IP to prevent abuse | Medium |
+| HTTPS only | Already handled by Railway | ✓ Done |
+| No raw data in repo | Already implemented | ✓ Done |
+
+---
+
+## 11. Contributors
 
 | Name | Role | Contribution |
 |---|---|---|
