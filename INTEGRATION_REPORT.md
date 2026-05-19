@@ -220,7 +220,7 @@ Claude:     returns answer in plain English — no manual API call needed
 from mcp.server.fastmcp import FastMCP
 import httpx
 
-API_BASE = "https://web-production-00c9c.up.railway.app"
+API_BASE = "https://web-production-00c9c.up.railway.app/docs"
 mcp = FastMCP("Payactiv EWA Demand API")
 
 @mcp.tool()
